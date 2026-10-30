@@ -1,5 +1,25 @@
--- Check imported row counts.
+-- 00_setup_and_import
+-- Purpose: create the database and load the raw Kaggle CSVs.
+-- Dataset: Formula 1 World Championship (Kaggle, atharvranjan). Record the download date in the README.
+--
+-- Raw tables are loaded with every column as TEXT on purpose: the cleaning
+-- views in 02_clean_views.sql do the type conversion, so bad values are visible
 
+CREATE DATABASE IF NOT EXISTS f1_performance_project;
+USE f1_performance_project;
+
+--   MySQL Workbench
+--   Right-click the schema -> Table Data Import Wizard -> choose each CSV ->
+--   name the tables exactly: raw_races, raw_results, raw_drivers, raw_constructors,
+--   raw_circuits, raw_qualifying, raw_pit_stops, raw_status.
+--   Check that the wizard imported ALL rows (compare with the CSV row count).
+
+-- If a table was imported wrongly and must be reloaded, empty it on purpose:
+--   TRUNCATE TABLE raw_drivers;   -- destroys all rows in that table; run only when you mean to
+
+USE f1_performance_project;
+
+-- 1. Row counts of imported raw tables
 SELECT 'races' AS table_name, COUNT(*) AS row_count FROM raw_races
 UNION ALL SELECT 'results', COUNT(*) FROM raw_results
 UNION ALL SELECT 'drivers', COUNT(*) FROM raw_drivers
@@ -9,11 +29,11 @@ UNION ALL SELECT 'qualifying', COUNT(*) FROM raw_qualifying
 UNION ALL SELECT 'pit_stops', COUNT(*) FROM raw_pit_stops
 UNION ALL SELECT 'status', COUNT(*) FROM raw_status;
 
+
 SELECT *
 FROM raw_races;
 
--- This query checks the race data for 2022–2025
-
+-- 2. This query checks the race data for 2022–2025
 SELECT
     CAST(`year` AS UNSIGNED) AS season,  -- CAST(`year` AS UNSIGNED)` converts the year from text to a number.
     COUNT(*) AS race_count,
@@ -23,7 +43,6 @@ FROM raw_races
 WHERE CAST(`year` AS UNSIGNED) BETWEEN 2022 AND 2025
 GROUP BY `year`
 ORDER BY season ASC ;
-
 
 SELECT *
 FROM raw_results;
@@ -37,8 +56,7 @@ FROM raw_constructors;
 SELECT *
 FROM raw_status;
 
--- Count result rows and check whether their IDs match the related tables
-
+-- 3. Count result rows and check whether their IDs match the related tables
 SELECT
     COUNT(*) AS result_rows,
     SUM(r.raceId IS NULL) AS missing_race_matches,
@@ -55,16 +73,15 @@ LEFT JOIN raw_constructors AS c
 LEFT JOIN raw_status AS s
     ON rr.statusId = s.statusId;
     
---  Check the number of rows and unique driver IDs in the driver table
-    
+-- 4. Check the number of rows and unique driver IDs in the driver table
 SELECT
     COUNT(*) AS driver_rows,
-    COUNT(DISTINCT driverId) AS unique_driver_ids
+    COUNT(DISTINCT driverId) AS unique_driver_ids,
+    MIN(CAST(driverId AS UNSIGNED)) AS lowest_driver_id,
+    MAX(CAST(driverId AS UNSIGNED)) AS highest_driver_id
 FROM raw_drivers;
 
---  Find result records whose driver IDs are missing from the driver table
--- Show the 20 missing IDs that appear most often
-
+-- 5. Result IDs that point to a driver missing from raw_drivers (should return 0 rows)
 SELECT
     rr.driverId,
     COUNT(*) AS affected_result_rows
@@ -76,41 +93,27 @@ GROUP BY rr.driverId
 ORDER BY affected_result_rows DESC
 LIMIT 20;
 
---  Preview the raw driver table
-
+-- 6. Preview the raw driver table
 SELECT *
 FROM raw_drivers
 ;
-
---  CHECK DRIVER ID RANGE AND DUPLICATES
-
-SELECT
-    COUNT(*) AS driver_rows,
-    COUNT(DISTINCT driverId) AS unique_driver_ids,
-    MIN(CAST(driverId AS UNSIGNED)) AS lowest_driver_id,
-    MAX(CAST(driverId AS UNSIGNED)) AS highest_driver_id
-FROM raw_drivers;   
  
- --  VIEW THE 10 HIGHEST DRIVER IDs IN NUMERIC ORDER
- 
+ -- 7. VIEW THE 10 HIGHEST DRIVER IDs IN NUMERIC ORDER
 SELECT driverId, driverRef, forename, surname
 FROM raw_drivers
 ORDER BY CAST(driverId AS UNSIGNED) DESC
 LIMIT 10;
 
---  CLEAR THE DRIVER TABLE BEFORE A REIMPORT
--- CAUTION: This permanently removes all rows from raw_drivers.
--- Keep this commented out unless you intentionally need to reload it.
+-- 8.  CLEAR THE DRIVER TABLE BEFORE A REIMPORT
+--  CAUTION: This permanently removes all rows from raw_drivers.
+--  Keep this commented out unless you intentionally need to reload it.
 
 -- TRUNCATE TABLE raw_drivers;
 
---  PREVIEW DRIVERS AFTER A REIMPORT
-
+-- 9. PREVIEW DRIVERS AFTER A REIMPORT
 SELECT *
 FROM raw_drivers
 ORDER BY driverId DESC;
-
---  RECHECK DRIVER ROW COUNT AND ID RANGE
 
 SELECT
     COUNT(*) AS driver_rows,
@@ -119,21 +122,33 @@ SELECT
     MAX(CAST(driverId AS UNSIGNED)) AS highest_driver_id
 FROM raw_drivers;  
   
- --  RECHECK THE 10 HIGHEST DRIVER IDs
- 
 SELECT driverId, driverRef, forename, surname
 FROM raw_drivers
 ORDER BY CAST(driverId AS UNSIGNED) DESC
 LIMIT 10;
 
---  CHECK WHICH SEASONS ARE AVAILABLE
-
+-- 10. CHECK WHICH SEASONS ARE AVAILABLE
 SELECT DISTINCT `year`
 FROM raw_races
 ORDER BY `year`;
 
--- CREATE CLEAN RACE VIEW FOR SEASONS 2022–2025
+-- 11. Checks Every distinct race status in scope.
+SELECT s.statusId, s.status, COUNT(*) AS result_rows
+FROM raw_results AS rr
+JOIN raw_races   AS r ON rr.raceId   = r.raceId
+JOIN raw_status  AS s ON rr.statusId = s.statusId
+WHERE CAST(r.`year` AS UNSIGNED) BETWEEN 2022 AND 2025
+GROUP BY s.statusId, s.status
+ORDER BY result_rows DESC;
 
+-- clean_views
+-- Purpose: create typed, filtered views and the fact view used by Power BI.
+-- Grain of fact_race_results: one driver's result in one race.
+-- Safe to re-run (CREATE OR REPLACE).
+
+USE f1_performance_project;
+
+-- Races: seasons 2022-2025 only
 CREATE OR REPLACE VIEW clean_races AS
 SELECT
     CAST((raceId) AS UNSIGNED) AS race_id,
@@ -148,8 +163,7 @@ WHERE (`year`) BETWEEN 2022 AND 2025
 AND CAST((circuitId) AS UNSIGNED) > 0
   AND STR_TO_DATE((`date`), '%Y-%m-%d') IS NOT NULL;
   
- --  PREVIEW CLEAN RACES AND COUNT THEM BY SEASON
- 
+--  PREVIEW CLEAN RACES AND COUNT THEM BY SEASON 
 SELECT *
 FROM clean_races
 ORDER BY season ;
@@ -161,9 +175,7 @@ FROM clean_races
 GROUP BY season
 ORDER BY season;
 
---    CREATE CLEAN RESULTS VIEW
---     Keep results linked to races in clean_races.
-
+-- Results: only results belonging to races in clean_races
 CREATE OR REPLACE VIEW clean_results AS
 SELECT
     CAST((rr.resultId) AS UNSIGNED) AS result_id,
@@ -171,23 +183,20 @@ SELECT
     CAST((rr.driverId) AS UNSIGNED) AS driver_id,
     CAST((rr.constructorId) AS UNSIGNED) AS constructor_id,
     CAST((rr.grid) AS UNSIGNED) AS grid_position,
-
     CASE
-        WHEN (rr.position) = '' THEN NULL
-        ELSE CAST((rr.position) AS UNSIGNED)
-    END AS finish_position,
-
+    WHEN TRIM(rr.position) REGEXP '^[0-9]+$'
+    THEN CAST(TRIM(rr.position) AS UNSIGNED)
+    ELSE NULL
+END AS finish_position,
     CAST((rr.positionOrder) AS UNSIGNED) AS finish_order,
     CAST((rr.points) AS DECIMAL(8,3)) AS points,
     CAST((rr.laps) AS UNSIGNED) AS laps_completed,
     CAST((rr.statusId) AS UNSIGNED) AS status_id
-
 FROM raw_results AS rr
 INNER JOIN clean_races AS cr
     ON CAST((rr.raceId) AS UNSIGNED) = cr.race_id;
     
- --  PREVIEW CLEAN RESULTS AND COUNT THEM BY SEASON
- 
+--  PREVIEW CLEAN RESULTS AND COUNT THEM BY SEASON 
 SELECT *
 FROM clean_results
 LIMIT 20;
@@ -205,8 +214,8 @@ ORDER BY cr.season;
 SELECT *
 FROM raw_results;
 
---  CREATE CLEAN DRIVER VIEW
-
+-- Dimensions
+-- CLEAN DRIVERS
 CREATE OR REPLACE VIEW clean_drivers AS
 SELECT
     CAST((driverId) AS UNSIGNED) AS driver_id,
@@ -221,19 +230,7 @@ SELECT
 FROM raw_drivers
 WHERE CAST((driverId) AS UNSIGNED) > 0;
 
-SELECT COUNT(*) AS cleaned_driver_rows
-FROM clean_drivers;
-
-SELECT *
-FROM clean_drivers
-ORDER BY driver_id DESC
-LIMIT 10;
-
-SELECT *
-FROM raw_drivers;
-
- -- CREATE CLEAN CONSTRUCTOR (TEAM) VIEW
- 
+-- CLEAN CONSTRUCTORS
 CREATE OR REPLACE VIEW clean_constructors AS
 SELECT
     CAST((constructorId) AS UNSIGNED) AS constructor_id,
@@ -243,19 +240,7 @@ SELECT
 FROM raw_constructors
 WHERE CAST((constructorId) AS UNSIGNED) > 0;
 
-SELECT COUNT(*) AS cleaned_constructor_rows
-FROM clean_constructors;
-
-SELECT *
-FROM clean_constructors
-ORDER BY constructor_id
-LIMIT 10;
-
-SELECT *
-FROM raw_constructors;
-
---  CREATE CLEAN CIRCUIT VIEW
-
+-- CLEAN CIRCUITS
 CREATE OR REPLACE VIEW clean_circuits AS
 SELECT
     CAST((circuitId) AS UNSIGNED) AS circuit_id,
@@ -269,40 +254,42 @@ SELECT
 FROM raw_circuits
 WHERE CAST((circuitId) AS UNSIGNED) > 0;
 
-SELECT COUNT(*) AS cleaned_circuit_rows
-FROM clean_circuits;
-
-SELECT *
-FROM clean_circuits
-ORDER BY country, circuit_name
-LIMIT 10;
-
-SELECT *
-FROM raw_circuits;
-
---  CREATE CLEAN RACE STATUS VIEW
-
+-- CLEAN STATUS
 CREATE OR REPLACE VIEW clean_status AS
 SELECT
-    CAST((statusId) AS UNSIGNED) AS status_id,
-    (status) AS status_description
-FROM raw_status
-WHERE CAST((statusId) AS UNSIGNED) > 0;
+    CAST(statusId AS UNSIGNED) AS status_id,
+    status AS status_description,
 
-SELECT COUNT(*) AS cleaned_status_rows
-FROM clean_status;
+    CASE
+        WHEN status = 'Finished'
+            THEN 'Finished'
+        WHEN status = 'Lapped'
+            THEN 'Finished (lapped)'
+        WHEN status REGEXP '^\\+[0-9]+ Laps?$'
+            THEN 'Finished (lapped)'
+        WHEN status IN ('Disqualified', 'Excluded')
+            THEN 'Disqualified'
+        WHEN status IN ('Accident', 'Collision', 'Collision damage', 'Spun off')
+            THEN 'Collision / accident'
+        ELSE 'Mechanical / other'
+    END AS status_group,
+
+    CASE
+        WHEN status = 'Finished'                     THEN 0
+        WHEN status = 'Lapped'                       THEN 0
+        WHEN status REGEXP '^\\+[0-9]+ Laps?$'       THEN 0
+        ELSE 1
+    END AS is_non_finish
+
+FROM raw_status
+WHERE CAST(statusId AS UNSIGNED) > 0;
 
 SELECT *
 FROM clean_status
 ORDER BY status_id
-LIMIT 20;
+;
 
-SELECT *
-FROM raw_status;
-
---  CREATE FACT VIEW
---  One row represents one driver's result in one race.
-
+-- Fact view
 CREATE OR REPLACE VIEW fact_race_results AS
 SELECT
     f.result_id,
@@ -316,37 +303,27 @@ SELECT
     f.finish_order,
     f.points,
     f.laps_completed,
-
     CASE
         WHEN f.finish_position = 1 THEN 1
         ELSE 0
     END AS is_win,
-
+    
     CASE
         WHEN f.finish_position BETWEEN 1 AND 3 THEN 1
         ELSE 0
     END AS is_podium
-
 FROM clean_results AS f
 JOIN clean_races AS r
     ON f.race_id = r.race_id;
-    
---  CHECK FACT ROW COUNT AND RESULT ID UNIQUENESS
 
+-- VALIDATION (run after creating the views)
+-- V1. Fact rows should equal unique result ids
 SELECT
     COUNT(*) AS fact_rows,
     COUNT(DISTINCT result_id) AS unique_result_ids
 FROM fact_race_results;
 
--- PREVIEW FACT ROWS
-
-SELECT *
-FROM fact_race_results
-LIMIT 20;
-
---    CHECK FACT-TO-DIMENSION MATCHES
---    Each missing_* value should be zero.
-
+-- V2. Every missing_* value must be 0
 SELECT
     COUNT(*) AS fact_rows,
     SUM(cr.race_id IS NULL) AS missing_race_matches,
@@ -366,8 +343,24 @@ LEFT JOIN clean_status AS s
 LEFT JOIN clean_circuits AS ci
     ON cr.circuit_id = ci.circuit_id;
     
-    
+-- fact_race_result_materialized
+-- CREATE AND VALIDATE THE MATERIALIZED RACE RESULTS TABLE
+-- Copy the fact view into a physical table for faster analysis,
 
+USE f1_performance_project;
+
+DROP TABLE IF EXISTS fact_race_results_materialized;
+
+CREATE TABLE fact_race_results_materialized AS
+SELECT *
+FROM fact_race_results;
+
+SELECT COUNT(*) AS fact_rows
+FROM fact_race_results_materialized;
+
+SELECT *
+FROM fact_race_results_materialized
+LIMIT 10;
 
 
 
